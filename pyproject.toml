@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "tjrcr"
+version = "2.0.0"
+description = "Library for validating parameters for comprehensive reservoir regulation."
+authors = ["Duy Nguyen <duynguyen02.dev@gmail.com>"]
+readme = "README.md"
+repository = "https://github.com/duynguyen02/tjrcr"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+pandas = "^2.2.2"
+tjwb = "^2.1.0"
+
+
+[tool.poetry.group.test.dependencies]
+pytest = "^8.3.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+

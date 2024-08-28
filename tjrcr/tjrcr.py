@@ -1,120 +1,97 @@
 import pandas as pd
-from tjwb import WB
+from tjwb import TJWBResult
+
+# Base on TJWBResult
+_datetime = 'datetime'
+_inflow_speed = 'inflow_speed'
+_outflow_speed = 'outflow_speed'
+# Addition
+_year = 'year'
+_month = 'month'
+_year_month = 'year_month'
+_delta_t = 'delta_t'
+_capacity_ht = 'capacity_ht'
 
 
-class TJRCR:
-    def __init__(
-            self,
-            tjwb: WB,
-            ets_df: pd.DataFrame,
-            V_c: float,
-            V_h: float
-    ):
-        self.tjwb = tjwb
-        self.ets_df = ets_df
-        self.V_c = V_c
-        self.V_h = V_h
+def _is_12_months_each_year(df: pd.DataFrame):
+    t_df = df.copy()
+    t_df[_year] = t_df[_datetime].dt.year
+    t_df[_month] = t_df[_datetime].dt.month
+    months_per_year = t_df.groupby(_year)[_month].nunique()
+    return (months_per_year == 12).all()
 
-        if V_h not in self.ets_df['storage'].values:
-            raise ValueError(f"Capacity does not exist!: {V_h}")
 
-        if V_c not in self.ets_df['storage'].values:
-            raise ValueError(f"Capacity does not exist!: {V_c}")
+def _is_greater_than_10_years(df: pd.DataFrame):
+    return len(df[_datetime].dt.year.unique()) >= 10
 
-    @staticmethod
-    def _is_greater_than_10_years(df: pd.DataFrame):
-        return len(df['timestamp'].dt.year.unique()) >= 10
 
-    @staticmethod
-    def _is_12_months_each_year(df: pd.DataFrame):
-        t_df = df.copy()
-        t_df['year'] = t_df['timestamp'].dt.year
-        t_df['month'] = t_df['timestamp'].dt.month
-        months_per_year = t_df.groupby('year')['month'].nunique()
-        return (months_per_year == 12).all()
+def _prepare_dataframe_for_P_n_calculation(_df: pd.DataFrame):
+    df = _df.copy()
+    df[_year] = df[_datetime].dt.year
+    df[_month] = df[_datetime].dt.month
 
-    @staticmethod
-    def _prepare_df_for_cal_P_n(
-            pre_df: pd.DataFrame,
-    ):
-        df = pre_df.copy()
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df['year'] = df['timestamp'].dt.year
-        df['month'] = df['timestamp'].dt.month
+    df.set_index(_datetime, inplace=True)
+    df = df.resample('ME').mean()
+    df.reset_index(drop=True, inplace=True)
 
-        df = df[['timestamp', 'Q_out_total', 'Q_in', 'year', 'month']]
+    df[_year] = df[_year].astype(int)
+    df[_month] = df[_month].astype(int)
 
-        df.set_index('timestamp', inplace=True)
-        df = df.resample('ME').mean()
-        df.reset_index(drop=True, inplace=True)
+    df[_year_month] = pd.to_datetime(df[_year].astype(str) + '-' + df[_month].astype(str), format='%Y-%m')
+    df[_delta_t] = df[_year_month].diff().dt.total_seconds().fillna(0)
+    df = df.drop(columns=[_year_month])
 
-        df['year'] = df['year'].astype(int)
-        df['month'] = df['month'].astype(int)
+    return df
 
-        df['date'] = pd.to_datetime(df['year'].astype(str) + '-' + df['month'].astype(str), format='%Y-%m')
-        df['delta_t'] = df['date'].diff().dt.total_seconds().fillna(0)
-        df = df.drop(columns=['date'])
 
-        return df
+def _calculate_P_n(
+        _df: pd.DataFrame,
+        V_c: float
+):
+    df = _df.copy()
 
-    @staticmethod
-    def _calculate_P_n(
-            pre_df: pd.DataFrame,
-            V_c: float
-    ):
-        df = pre_df.copy()
+    unique_years = df[_year].unique()
+    enough_water_years = 0
 
-        unique_years = df['year'].unique()
-        enough_water_years = 0
+    for y in unique_years:
+        year_df = df.loc[df[_year] == y].copy()
 
-        for y in unique_years:
-            year_df = df.loc[df['year'] == y].copy()
+        capacity_ht = []
+        previous_capacity_ht = V_c
+        for index, row in year_df.iterrows():
+            previous_capacity_ht = abs(
+                previous_capacity_ht + ((row[_outflow_speed] - row[_inflow_speed]) * row[_delta_t]) / 10 ** 6)
+            capacity_ht.append(previous_capacity_ht)
 
-            storage_ht = []
-            previous_storage_ht = V_c
-            for index, row in year_df.iterrows():
-                previous_storage_ht = abs(
-                    previous_storage_ht + ((row['Q_out_total'] - row['Q_in']) * row['delta_t']) / 10 ** 6)
-                storage_ht.append(previous_storage_ht)
+        year_df[_capacity_ht] = capacity_ht
+        if year_df[_capacity_ht].min() > V_c:
+            enough_water_years += 1
 
-            year_df['storage_ht'] = storage_ht
-            if year_df['storage_ht'].min() > V_c:
-                enough_water_years += 1
+    P_n = (enough_water_years / len(unique_years)) * 100
 
-        P_n = (enough_water_years / len(unique_years)) * 100
+    return P_n
 
-        return P_n
 
-    def is_comprehensive_regulation(
-            self,
-            pre_df: pd.DataFrame,
-            eps: float,
-            P: float,
-            round_to: int = 3,
-            forced_gt_10_year: bool = True,
-            forced_12_months_each_year: bool = True,
-            forced_elevation: bool = True
-    ):
-        df = pre_df.copy()
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.sort_values(by='timestamp')
+def is_comprehensive_regulation(
+        tjwb_result: TJWBResult,
+        eps: float,
+        P: float,
+        V_c: float,
+        forced_gt_10_year: bool = True,
+        forced_12_months_each_year: bool = True
+):
+    df = tjwb_result.to_dataframe()
+    df[_datetime] = pd.to_datetime(df[_datetime])
+    df = df.sort_values(by=_datetime)
 
-        if forced_gt_10_year and not self._is_greater_than_10_years(df):
-            raise ValueError("Requires at least 10 years.")
+    if forced_gt_10_year and not _is_greater_than_10_years(df):
+        raise ValueError("Requires at least 10 years.")
 
-        if forced_12_months_each_year and not self._is_12_months_each_year(df):
-            raise ValueError("Requires 12 months in each year.")
+    if forced_12_months_each_year and not _is_12_months_each_year(df):
+        raise ValueError("Requires 12 months in each year.")
 
-        pre_rows = df.shape[0]
-        df = self.tjwb.calculate(
-            pre_df,
-            round_to
-        )
-        if pre_rows != df.shape[0] and forced_elevation:
-            raise ValueError("Elevations in the data are invalid!")
+    df = _prepare_dataframe_for_P_n_calculation(df)
 
-        df = self._prepare_df_for_cal_P_n(df)
+    P_n = _calculate_P_n(df, V_c)
 
-        P_n = self._calculate_P_n(df, self.V_c)
-
-        return (P_n - P) <= eps
+    return (P_n - P) <= eps
