@@ -1,4 +1,5 @@
 # tjrcr
+![PyPI - Version](https://img.shields.io/pypi/v/tjrcr)
 
 `tjrcr` is a Python library designed for validating parameters for comprehensive reservoir regulation. This library
 provides methods to ensure that the input data meets specific criteria required for effective reservoir management, such
